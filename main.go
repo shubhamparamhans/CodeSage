@@ -179,7 +179,7 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 	if len(temp) > 0  {
 		exclude = strings.Split(temp, ",")
 	}
-	exclude = append(exclude, "/node_modules","/venv","/build","/dist","/.venv","/log")
+	exclude = append(exclude, "/node_modules","/venv","/build","/dist","/.venv","/log","/node_modules/","/venv/","/build/","/dist/","/.venv/","/log/","/.vite/","/.git/")
 	for i := range exclude {
 		exclude[i] = strings.TrimSpace(exclude[i])
 	}
