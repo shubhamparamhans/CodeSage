@@ -23,8 +23,8 @@ With support for multiple programming languages and an in-memory vector database
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/CodePilot.git
-   cd CodePilot
+   git clone https://github.com/shubhamparamhans/Associate-AI-EM.git
+   cd Associate-AI-EM
 
 
 ---
