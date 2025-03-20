@@ -1,6 +1,6 @@
 # Associate AI EM: AI-Powered Code  Assistant Engineering Manger
 
-![Associate AI EM Logo](https://via.placeholder.com/150) <!-- Add a logo if you have one -->
+![Associate AI EM Logo](https://s3.ca-central-1.amazonaws.com/logojoy/logos/215622747/no_padding.png?8606.300000011921) <!-- Add a logo if you have one -->
 
 Associate AI EM is a powerful tool that automates code documentation and indexing. 
 It uses AI to generate detailed comments and documentation for your codebase, making it easier to understand and maintain. 
