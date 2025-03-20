@@ -25,9 +25,23 @@ With support for multiple programming languages and an in-memory vector database
    ```bash
    git clone https://github.com/shubhamparamhans/Associate-AI-EM.git
    cd Associate-AI-EM
-
-
 ---
+**Screenshots**
+![image](https://github.com/user-attachments/assets/3e3fc85e-4789-4cf3-8262-6ea0e8a98140)
+
+![image](https://github.com/user-attachments/assets/07448c14-181b-46c9-ad91-dc818b8b2a5b)
+
+## How to Use
+- Clone repo
+- Run code (go run main.go)
+- At first it will generate a config file in same folder
+  {
+  "docs_dir": "./docs",   #your default directory to store data
+  "embedding_model": "nomic-embed-text", #text embedding model
+  "code_chat_model": "qwen2.5-coder:1.5b", #ollama model to query code
+  "documentation_model": "llama3.2:1b", #ollama model to create documentation
+  "ollama_host": "http://localhost:11434" #url where your ollama is running
+  }
 
  Ideas/Suggestions for the Codebase**
 
