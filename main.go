@@ -31,7 +31,7 @@ func DefaultConfig() Config {
 		EmbeddingModel:     "nomic-embed-text",
 		CodeChatModel:      "qwen2.5-coder:1.5b",
 		DocumentationModel: "llama3.2:1b",
-		OllamaHost:         "https://allm.habitnetwork.xyz",
+		OllamaHost:         "http://localhost:11434",
 	}
 }
 
