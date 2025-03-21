@@ -189,7 +189,7 @@ func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []stri
 			}
 
 			ext := filepath.Ext(path)
-			if ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".java" || ext == ".cpp" || ext == ".c" || ext == ".go" || ext == ".vue" {
+			if ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".java" || ext == ".cpp" || ext == ".c" || ext == ".go" || ext == ".vue" || ext == ".jsx" || ext == ".tsx" {
 				files = append(files, path)
 			}
 		}
