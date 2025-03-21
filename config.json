@@ -1,0 +1,9 @@
+{
+  "docs_dir": "./docs",
+  "embedding_model": "nomic-embed-text",
+  "code_chat_model": "qwen2.5-coder:1.5b",
+  "documentation_model": "llama3.2:1b",
+  "ollama_host": "https://allm.habitnetwork.xyz",
+  "hash_db_path": "./db",
+  "sqlite_db_path": "file_hashes.db"
+}

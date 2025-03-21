@@ -3,16 +3,22 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	_ "github.com/mattn/go-sqlite3" // Import SQLite driver
 	"github.com/ollama/ollama/api"
+	"github.com/philippgille/chromem-go" // Chromem in-memory vector DB
 	"github.com/schollz/progressbar/v3"
-	"github.com/philippgille/chromem-go"// Chromem in-memory vector DB
 )
 
 // Config holds the configuration values
@@ -22,6 +28,8 @@ type Config struct {
 	CodeChatModel      string `json:"code_chat_model"`
 	DocumentationModel string `json:"documentation_model"`
 	OllamaHost         string `json:"ollama_host"`
+	HashDBPath         string `json:"hash_db_path"`   // Path to chromem DB directory
+	SQLiteDBPath       string `json:"sqlite_db_path"` // Path to the SQLite database
 }
 
 // DefaultConfig returns the default configuration
@@ -32,6 +40,8 @@ func DefaultConfig() Config {
 		CodeChatModel:      "qwen2.5-coder:1.5b",
 		DocumentationModel: "llama3.2:1b",
 		OllamaHost:         "http://localhost:11434",
+		HashDBPath:         "./db",           // Default vector DB path
+		SQLiteDBPath:       "file_hashes.db", // Default SQLite database path
 	}
 }
 
@@ -70,25 +80,80 @@ func LoadConfig(filename string) (Config, error) {
 
 	return config, nil
 }
+
 type CodeAssistant struct {
 	vectorDB *chromem.DB // Chromem in-memory vector DB
 	config   Config      // Configuration values
+	db       *sql.DB     // SQLite database connection
 }
 
 func NewCodeAssistant(config Config) *CodeAssistant {
 	// Initialize Chromem in-memory vector DB
-	db, err := chromem.NewPersistentDB("./db", false)
+	dbChromem, err := chromem.NewPersistentDB(config.HashDBPath, false)
 	if err != nil {
-		fmt.Printf("failed to create Ollama client: %v\n", err)
+		fmt.Printf("failed to create chromem client: %v\n", err)
 		return nil
 	}
 
+	// Initialize SQLite database
+	db, err := sql.Open("sqlite3", config.SQLiteDBPath)
+	if err != nil {
+		log.Fatalf("Failed to open SQLite database: %v", err)
+		return nil // Or handle the error as appropriate
+	}
+
+	// Create the file_hashes table if it doesn't exist
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS file_hashes (
+			file_path TEXT PRIMARY KEY,
+			hash TEXT
+		)
+	`)
+	if err != nil {
+		log.Fatalf("Failed to create file_hashes table: %v", err)
+		return nil // Or handle the error as appropriate
+	}
+
 	return &CodeAssistant{
-		vectorDB: db,
+		vectorDB: dbChromem,
 		config:   config,
+		db:       db,
 	}
 }
 
+// calculateMD5Hash calculates the MD5 hash of a file.
+func calculateMD5Hash(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// getFileHash retrieves the file hash from the database.
+func (ca *CodeAssistant) getFileHash(filePath string) (string, bool, error) {
+	var hash string
+	err := ca.db.QueryRow("SELECT hash FROM file_hashes WHERE file_path = ?", filePath).Scan(&hash)
+	if err == sql.ErrNoRows {
+		return "", false, nil // File not found in the database
+	} else if err != nil {
+		return "", false, err // Other error
+	}
+	return hash, true, nil // Hash found
+}
+
+// setFileHash stores the file hash in the database.
+func (ca *CodeAssistant) setFileHash(filePath, hash string) error {
+	_, err := ca.db.Exec("INSERT OR REPLACE INTO file_hashes (file_path, hash) VALUES (?, ?)", filePath, hash)
+	return err
+}
 
 func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []string) ([]string, error) {
 	var files []string
@@ -104,7 +169,7 @@ func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []stri
 			}
 		} else {
 			ext := filepath.Ext(path)
-			if ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".java" || ext == ".cpp" || ext == ".c" || ext == ".go" || ext == ".vue"{
+			if ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".java" || ext == ".cpp" || ext == ".c" || ext == ".go" || ext == ".vue" {
 				files = append(files, path)
 			}
 		}
@@ -123,10 +188,10 @@ func (ca *CodeAssistant) generateComments(code string) (string, error) {
 	// Prepare the prompt
 	prompt := fmt.Sprintf(`%s
 		Generate comments and documentation for this piece of code, only return text and do not return any code.
-		
+
 		Do not skip any function defined. It is critically important that we cover all functions.
 		Also generate documentation only for functions and classes which are defined.
-		
+
 		Documentation should be at function level or class level, no line-specific comments should be returned.`, code)
 
 	// Create the chat request
@@ -176,10 +241,10 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 	scanner.Scan()
 	exclude := []string{}
 	temp := scanner.Text()
-	if len(temp) > 0  {
+	if len(temp) > 0 {
 		exclude = strings.Split(temp, ",")
 	}
-	exclude = append(exclude, "/node_modules","/venv","/build","/dist","/.venv","/log","/node_modules/","/venv/","/build/","/dist/","/.venv/","/log/","/.vite/","/.git/")
+	exclude = append(exclude, "/node_modules", "/venv", "/build", "/dist", "/.venv", "/log", "/node_modules/", "/venv/", "/build/", "/dist/", "/.venv/", "/log/", "/.vite/", "/.git/")
 	for i := range exclude {
 		exclude[i] = strings.TrimSpace(exclude[i])
 	}
@@ -192,6 +257,7 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 
 	fmt.Printf("Indexing %d files...\n", len(files))
 	processedFiles := 0
+	updatedFiles := 0 // Track the number of files that need reindexing
 
 	bar := progressbar.Default(int64(len(files)))
 	for _, file := range files {
@@ -201,11 +267,25 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		}
 		docPath := filepath.Join(projectDocsDir, relPath+".txt")
 
-		if _, err := os.Stat(docPath); err == nil {
-			bar.Add(1)
-			continue // Skip already processed files
+		// Calculate the MD5 hash of the file
+		currentHash, err := calculateMD5Hash(file)
+		if err != nil {
+			fmt.Printf("Error calculating hash for %s: %v\n", file, err)
+			continue // Skip this file and continue with the next
 		}
 
+		// Check if the file has changed
+		oldHash, found, err := ca.getFileHash(file)
+		if err != nil {
+			fmt.Printf("Error getting hash for %s from DB: %v\n", file, err)
+			continue // Skip this file
+		}
+
+		if found && oldHash == currentHash {
+			bar.Add(1)
+			continue // Skip unchanged files
+		}
+		updatedFiles++ // Increment the number of files to reindex
 		fmt.Printf("Processing %s\n", file)
 		if err := os.MkdirAll(filepath.Dir(docPath), os.ModePerm); err != nil {
 			return err
@@ -227,10 +307,33 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 
 		processedFiles++
 		bar.Add(1)
-	}
 
+		// Update the file hash in the database
+		err = ca.setFileHash(file, currentHash)
+		if err != nil {
+			fmt.Printf("Error setting hash for %s in DB: %v\n", file, err)
+		}
+	}
+	// Save the updated file hashes to the file
+	//if err := ca.saveFileHashes(); err != nil {
+	//	fmt.Printf("Error saving file hashes: %v\n", err)
+	//}
 	fmt.Printf("Processed %d new files\n", processedFiles)
-	return ca.createVectorStore(projectName, path)
+	if updatedFiles > 0 {
+		fmt.Printf("%d files were updated and need reindexing.\n", updatedFiles)
+		//remove the whole vector DB and add code
+		os.RemoveAll(ca.config.HashDBPath)
+		db, err := chromem.NewPersistentDB(ca.config.HashDBPath, false)
+
+		if err != nil {
+			return fmt.Errorf("failed to add document to vector DB: %v", err)
+		}
+		ca.vectorDB = db
+
+		return ca.createVectorStore(projectName, path)
+
+	}
+	return nil
 }
 
 func (ca *CodeAssistant) createVectorStore(projectName, codebasePath string) error {
@@ -270,20 +373,19 @@ func (ca *CodeAssistant) createVectorStore(projectName, codebasePath string) err
 	// splitter := func(text string) []string {
 	// 	return strings.Split(text, "\n\n") // Split by double newlines
 	// }
-	collec,err := ca.vectorDB.CreateCollection("codeio",nil,chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
-	if err!= nil{
+	collec, err := ca.vectorDB.CreateCollection("codeio", nil, chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
+	if err != nil {
 		return fmt.Errorf("failed to add document to vector DB: %v", err)
 	}
 	for _, doc := range documents {
-		if err := collec.AddDocument(context.Background(), doc); err != nil {  
+		if err := collec.AddDocument(context.Background(), doc); err != nil {
 			//{ID:doc.ID, Content:doc, Metadata: doc.Metadata}
 			return fmt.Errorf("failed to add document to vector DB: %v", err)
 		}
 		// chunks := splitter(doc.Content)
 		// for _, chunk := range chunks {
 		// 	// Add each chunk to the vector DB
-			
-			
+
 		// }
 	}
 	bar.Add(1)
@@ -320,14 +422,15 @@ func (ca *CodeAssistant) reindexCodebase() error {
 	fmt.Printf("Delete ALL data for %s and reindex? (y/n): ", selectedProject)
 	scanner.Scan()
 	confirm := strings.ToLower(scanner.Text())
-	if confirm != "y" {
-		return nil
+	if confirm == "y" {
+		docsPath := filepath.Join(ca.config.DocsDir, selectedProject)
+		if err := os.RemoveAll(docsPath); err != nil {
+			return err
+		}
 	}
-
-	docsPath := filepath.Join(ca.config.DocsDir, selectedProject)
-	if err := os.RemoveAll(docsPath); err != nil {
-		return err
-	}
+	// if confirm != "y" {
+	// 	return nil
+	// }
 
 	fmt.Printf("Reindexing %s...\n", selectedProject)
 	return ca.indexCodebase(selectedProject)
@@ -373,8 +476,8 @@ func (ca *CodeAssistant) searchCodebase() error {
 		}
 
 		// Retrieve relevant documents from the vector DB
-		collec := ca.vectorDB.GetCollection("codeio",chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
-		results, err := collec.Query(context.Background(), query, 1,nil,nil) // Search for top 5 results
+		collec := ca.vectorDB.GetCollection("codeio", chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
+		results, err := collec.Query(context.Background(), query, 1, nil, nil) // Search for top 5 results
 		if err != nil {
 			return fmt.Errorf("failed to search vector DB: %v", err)
 		}
@@ -386,12 +489,12 @@ func (ca *CodeAssistant) searchCodebase() error {
 			// fmt.Printf("- %s: %s\n", result.ID, result.Content)
 			code = code + result.Content
 		}
-			// Prepare the prompt
-		
+		// Prepare the prompt
+
 		prompt := fmt.Sprintf(`
 		Context: %s
 		Question: %s
-		Answer query clearly and concisely, include relevant file paths when applicable. Your answer should be related to this codebase only`, code,query)
+		Answer query clearly and concisely, include relevant file paths when applicable. Your answer should be related to this codebase only`, code, query)
 
 		// Create the chat request
 		req := &api.ChatRequest{
@@ -403,7 +506,6 @@ func (ca *CodeAssistant) searchCodebase() error {
 				},
 			},
 		}
-		
 
 		var responseContent strings.Builder
 		respFunc := func(resp api.ChatResponse) error {
