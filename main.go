@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3" // Import SQLite driver
 	"github.com/ollama/ollama/api"
@@ -21,7 +22,7 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-// Config holds the configuration values
+// Config holds the global configuration values
 type Config struct {
 	DocsDir            string `json:"docs_dir"`
 	EmbeddingModel     string `json:"embedding_model"`
@@ -32,7 +33,7 @@ type Config struct {
 	SQLiteDBPath       string `json:"sqlite_db_path"` // Path to the SQLite database
 }
 
-// DefaultConfig returns the default configuration
+// DefaultConfig returns the default global configuration
 func DefaultConfig() Config {
 	return Config{
 		DocsDir:            "./docs",
@@ -45,7 +46,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// LoadConfig loads the configuration from a file or creates it with default values
+// LoadConfig loads the global configuration from a file or creates it with default values
 func LoadConfig(filename string) (Config, error) {
 	var config Config
 
@@ -81,10 +82,22 @@ func LoadConfig(filename string) (Config, error) {
 	return config, nil
 }
 
+// ProjectConfig holds the configuration for a specific project
+type ProjectConfig struct {
+	ProjectName       string    `json:"project_name"`
+	ProjectPath       string    `json:"project_path"`
+	ExcludeFolders    []string  `json:"exclude_folders"`
+	ExcludeFiles      []string  `json:"exclude_files"` // (optional)
+	LastUpdated       time.Time `json:"last_updated"`
+	TotalIndexedFiles int       `json:"total_indexed_files"`
+	TotalFailedFiles  int       `json:"total_failed_files"`
+}
+
 type CodeAssistant struct {
-	vectorDB *chromem.DB // Chromem in-memory vector DB
-	config   Config      // Configuration values
-	db       *sql.DB     // SQLite database connection
+	vectorDB      *chromem.DB   // Chromem in-memory vector DB
+	config        Config        // Global configuration values
+	db            *sql.DB       // SQLite database connection
+	projectConfig ProjectConfig // Project-specific config
 }
 
 func NewCodeAssistant(config Config) *CodeAssistant {
@@ -155,7 +168,7 @@ func (ca *CodeAssistant) setFileHash(filePath, hash string) error {
 	return err
 }
 
-func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []string) ([]string, error) {
+func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []string, excludeFiles []string) ([]string, error) {
 	var files []string
 	err := filepath.Walk(directoryPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -168,6 +181,13 @@ func (ca *CodeAssistant) parseDirectory(directoryPath string, excludeDirs []stri
 				}
 			}
 		} else {
+			// Exclude specific files
+			for _, excludeFile := range excludeFiles {
+				if filepath.Base(path) == excludeFile {
+					return nil // Skip the file
+				}
+			}
+
 			ext := filepath.Ext(path)
 			if ext == ".py" || ext == ".js" || ext == ".ts" || ext == ".java" || ext == ".cpp" || ext == ".c" || ext == ".go" || ext == ".vue" {
 				files = append(files, path)
@@ -221,49 +241,146 @@ func (ca *CodeAssistant) generateComments(code string) (string, error) {
 	return responseContent.String(), nil
 }
 
-func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
-	var projectName string
-	if reindexProject != "" {
-		projectName = reindexProject
-	} else {
-		fmt.Print("Enter project name: ")
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		projectName = scanner.Text()
+// loadProjectConfig loads the project config from a JSON file.
+func (ca *CodeAssistant) loadProjectConfig(projectName string) (ProjectConfig, error) {
+	configPath := filepath.Join(ca.config.DocsDir, projectName, "project_config.json")
+	var config ProjectConfig
+	configFile, err := os.Open(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Return an empty config if the file doesn't exist
+			return ProjectConfig{}, nil
+		}
+		return ProjectConfig{}, err
+	}
+	defer configFile.Close()
+
+	byteValue, _ := ioutil.ReadFile(configPath)
+
+	err = json.Unmarshal(byteValue, &config)
+	if err != nil {
+		return ProjectConfig{}, err
+	}
+	return config, nil
+}
+
+// saveProjectConfig saves the project config to a JSON file.
+func (ca *CodeAssistant) saveProjectConfig(config ProjectConfig) error {
+	configPath := filepath.Join(ca.config.DocsDir, config.ProjectName, "project_config.json")
+
+	// Ensure the directory exists
+	err := os.MkdirAll(filepath.Dir(configPath), os.ModePerm)
+	if err != nil {
+		return err
 	}
 
-	fmt.Print("Enter codebase path: ")
+	// Create the file
+	configFile, err := os.Create(configPath) // Use os.Create instead of json.Create
+	if err != nil {
+		return err
+	}
+	defer configFile.Close()
+
+	// Create a JSON encoder
+	encoder := json.NewEncoder(configFile)
+	encoder.SetIndent("", "  ") // Optional: Add indentation for readability
+
+	// Encode the config to the file
+	err = encoder.Encode(config)
+	return err
+}
+
+func (ca *CodeAssistant) getProjectDetails() (string, string, []string, []string, error) {
+
+	var projectName string
+	fmt.Print("Enter project name: ")
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	projectName = scanner.Text()
+
+	fmt.Print("Enter codebase path: ")
+	scanner = bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	path := scanner.Text()
 
 	fmt.Print("Folders to exclude (comma separated): ")
+	scanner = bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	exclude := []string{}
 	temp := scanner.Text()
 	if len(temp) > 0 {
 		exclude = strings.Split(temp, ",")
 	}
-	exclude = append(exclude, "/node_modules", "/venv", "/build", "/dist", "/.venv", "/log", "/node_modules/", "/venv/", "/build/", "/dist/", "/.venv/", "/log/", "/.vite/", "/.git/")
 	for i := range exclude {
 		exclude[i] = strings.TrimSpace(exclude[i])
 	}
+	fmt.Print("Files to exclude (comma separated): ")
+	scanner = bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	excludeFiles := []string{}
+	tempFiles := scanner.Text()
+	if len(tempFiles) > 0 {
+		excludeFiles = strings.Split(tempFiles, ",")
+	}
+	for i := range excludeFiles {
+		excludeFiles[i] = strings.TrimSpace(excludeFiles[i])
+	}
+
+	return projectName, path, exclude, excludeFiles, nil
+}
+
+func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
+	var projectName, path string
+	var exclude, excludeFiles []string
+	var err error
+
+	if reindexProject != "" {
+		ca.projectConfig, err = ca.loadProjectConfig(reindexProject)
+
+		if err != nil {
+			fmt.Printf("Error loading project config: %v\n", err)
+			// Optionally, prompt the user for details if the config is missing/invalid
+			projectName, path, exclude, excludeFiles, err = ca.getProjectDetails()
+			if err != nil {
+				return fmt.Errorf("error getting project details: %v", err)
+			}
+		} else {
+			projectName = ca.projectConfig.ProjectName
+			path = ca.projectConfig.ProjectPath
+			exclude = ca.projectConfig.ExcludeFolders
+			excludeFiles = ca.projectConfig.ExcludeFiles
+		}
+
+	} else {
+
+		projectName, path, exclude, excludeFiles, err = ca.getProjectDetails()
+		if err != nil {
+			return fmt.Errorf("error getting project details: %v", err)
+		}
+	}
+	defaultExcludes := []string{"/node_modules", "/venv", "/build", "/dist", "/.venv", "/log", "/node_modules/", "/venv/", "/build/", "/dist/", "/.venv/", "/log/", "/.vite/", "/.git/"}
+
+	exclude = append(exclude, defaultExcludes...)
 
 	projectDocsDir := filepath.Join(ca.config.DocsDir, projectName)
-	files, err := ca.parseDirectory(path, exclude)
+	files, err := ca.parseDirectory(path, exclude, excludeFiles)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Indexing %d files...\n", len(files))
 	processedFiles := 0
+	failedFiles := 0
 	updatedFiles := 0 // Track the number of files that need reindexing
 
 	bar := progressbar.Default(int64(len(files)))
 	for _, file := range files {
 		relPath, err := filepath.Rel(path, file)
 		if err != nil {
-			return err
+			fmt.Printf("Error getting relative path for %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
+			continue
 		}
 		docPath := filepath.Join(projectDocsDir, relPath+".txt")
 
@@ -271,6 +388,8 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		currentHash, err := calculateMD5Hash(file)
 		if err != nil {
 			fmt.Printf("Error calculating hash for %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
 			continue // Skip this file and continue with the next
 		}
 
@@ -278,6 +397,8 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		oldHash, found, err := ca.getFileHash(file)
 		if err != nil {
 			fmt.Printf("Error getting hash for %s from DB: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
 			continue // Skip this file
 		}
 
@@ -288,21 +409,33 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		updatedFiles++ // Increment the number of files to reindex
 		fmt.Printf("Processing %s\n", file)
 		if err := os.MkdirAll(filepath.Dir(docPath), os.ModePerm); err != nil {
-			return err
+			fmt.Printf("Error creating directory for %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
+			continue
 		}
 
 		code, err := ioutil.ReadFile(file)
 		if err != nil {
-			return err
+			fmt.Printf("Error reading file %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
+			continue
 		}
 
 		comments, err := ca.generateComments(string(code))
 		if err != nil {
-			return err
+			fmt.Printf("Error generating comments for %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
+			continue
 		}
 
 		if err := ioutil.WriteFile(docPath, []byte(fmt.Sprintf("File: %s\n%s", relPath, comments)), 0644); err != nil {
-			return err
+			fmt.Printf("Error writing doc file for %s: %v\n", file, err)
+			failedFiles++
+			bar.Add(1)
+			continue
 		}
 
 		processedFiles++
@@ -312,13 +445,32 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		err = ca.setFileHash(file, currentHash)
 		if err != nil {
 			fmt.Printf("Error setting hash for %s in DB: %v\n", file, err)
+			failedFiles++
 		}
 	}
+	// Save the project config
+	ca.projectConfig = ProjectConfig{
+		ProjectName:       projectName,
+		ProjectPath:       path,
+		ExcludeFolders:    exclude,
+		ExcludeFiles:      excludeFiles,
+		LastUpdated:       time.Now(),
+		TotalIndexedFiles: processedFiles,
+		TotalFailedFiles:  failedFiles,
+	}
+
+	err = ca.saveProjectConfig(ca.projectConfig)
+	if err != nil {
+		fmt.Printf("Error saving project config: %v\n", err)
+	}
+
 	// Save the updated file hashes to the file
 	//if err := ca.saveFileHashes(); err != nil {
 	//	fmt.Printf("Error saving file hashes: %v\n", err)
 	//}
 	fmt.Printf("Processed %d new files\n", processedFiles)
+	fmt.Printf("%d files failed to process.\n", failedFiles)
+
 	if updatedFiles > 0 {
 		fmt.Printf("%d files were updated and need reindexing.\n", updatedFiles)
 		//remove the whole vector DB and add code
@@ -428,9 +580,6 @@ func (ca *CodeAssistant) reindexCodebase() error {
 			return err
 		}
 	}
-	// if confirm != "y" {
-	// 	return nil
-	// }
 
 	fmt.Printf("Reindexing %s...\n", selectedProject)
 	return ca.indexCodebase(selectedProject)
@@ -579,7 +728,7 @@ func (ca *CodeAssistant) run() {
 }
 
 func main() {
-	// Load configuration
+	// Load global configuration
 	config, err := LoadConfig("config.json")
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
