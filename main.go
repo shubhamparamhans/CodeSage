@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +33,7 @@ type Config struct {
 	OllamaHost         string `json:"ollama_host"`
 	HashDBPath         string `json:"hash_db_path"`   // Path to chromem DB directory
 	SQLiteDBPath       string `json:"sqlite_db_path"` // Path to the SQLite database
+	WebPort            string `json:"web_port"`       // Port for the web UI
 }
 
 // DefaultConfig returns the default global configuration
@@ -43,6 +46,7 @@ func DefaultConfig() Config {
 		OllamaHost:         "http://localhost:11434",
 		HashDBPath:         "./db",           // Default vector DB path
 		SQLiteDBPath:       "file_hashes.db", // Default SQLite database path
+		WebPort:            "8080",           // Default web port
 	}
 }
 
@@ -98,6 +102,7 @@ type CodeAssistant struct {
 	config        Config        // Global configuration values
 	db            *sql.DB       // SQLite database connection
 	projectConfig ProjectConfig // Project-specific config
+	projects      []string      // List of indexed projects
 }
 
 func NewCodeAssistant(config Config) *CodeAssistant {
@@ -289,7 +294,6 @@ func (ca *CodeAssistant) saveProjectConfig(config ProjectConfig) error {
 	err = encoder.Encode(config)
 	return err
 }
-
 func (ca *CodeAssistant) getProjectDetails() (string, string, []string, []string, error) {
 
 	var projectName string
@@ -372,6 +376,24 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 	processedFiles := 0
 	failedFiles := 0
 	updatedFiles := 0 // Track the number of files that need reindexing
+
+	ca.projectConfig, err = ca.loadProjectConfig(reindexProject)
+	// Save the project config
+	if err != nil {
+		ca.projectConfig = ProjectConfig{
+			ProjectName:       projectName,
+			ProjectPath:       path,
+			ExcludeFolders:    exclude,
+			ExcludeFiles:      excludeFiles,
+			LastUpdated:       time.Now(),
+			TotalIndexedFiles: processedFiles,
+			TotalFailedFiles:  failedFiles,
+		}
+		err = ca.saveProjectConfig(ca.projectConfig)
+		if err != nil {
+			fmt.Printf("Error saving project config: %v\n", err)
+		}
+	}
 
 	bar := progressbar.Default(int64(len(files)))
 	for _, file := range files {
@@ -525,7 +547,7 @@ func (ca *CodeAssistant) createVectorStore(projectName, codebasePath string) err
 	// splitter := func(text string) []string {
 	// 	return strings.Split(text, "\n\n") // Split by double newlines
 	// }
-	collec, err := ca.vectorDB.CreateCollection("codeio", nil, chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
+	collec, err := ca.vectorDB.CreateCollection(projectName, nil, chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
 	if err != nil {
 		return fmt.Errorf("failed to add document to vector DB: %v", err)
 	}
@@ -576,8 +598,14 @@ func (ca *CodeAssistant) reindexCodebase() error {
 	confirm := strings.ToLower(scanner.Text())
 	if confirm == "y" {
 		docsPath := filepath.Join(ca.config.DocsDir, selectedProject)
+
 		if err := os.RemoveAll(docsPath); err != nil {
 			return err
+		}
+		// Delete file hash entries from the SQLite database for the selected project
+		_, err = ca.db.Exec("DELETE FROM file_hashes WHERE file_path LIKE ?", filepath.Join(ca.projectConfig.ProjectPath, "%"))
+		if err != nil {
+			return fmt.Errorf("failed to delete file hash entries from DB: %v", err)
 		}
 	}
 
@@ -585,13 +613,7 @@ func (ca *CodeAssistant) reindexCodebase() error {
 	return ca.indexCodebase(selectedProject)
 }
 
-func (ca *CodeAssistant) searchCodebase() error {
-	// Initialize the Ollama client
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		return fmt.Errorf("failed to create Ollama client: %v", err)
-	}
-
+func (ca *CodeAssistant) searchCodebaseCli() error {
 	projects, err := ca.listProjects(ca.config.DocsDir)
 	if err != nil {
 		return err
@@ -616,6 +638,7 @@ func (ca *CodeAssistant) searchCodebase() error {
 	selectedProject := projects[selectedIndex-1]
 
 	fmt.Printf("Loaded %s. Enter queries (type 'exit' to quit):\n", selectedProject)
+
 	for {
 		fmt.Print("\nQuery: ")
 		scanner.Scan()
@@ -624,58 +647,74 @@ func (ca *CodeAssistant) searchCodebase() error {
 			break
 		}
 
-		// Retrieve relevant documents from the vector DB
-		collec := ca.vectorDB.GetCollection("codeio", chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
-		results, err := collec.Query(context.Background(), query, 1, nil, nil) // Search for top 5 results
+		fmt.Print("project name is ", selectedProject)
+		fmt.Print("queyr is", query)
+
+		res, err := ca.searchCodebase(selectedProject, query)
 		if err != nil {
-			return fmt.Errorf("failed to search vector DB: %v", err)
+			fmt.Errorf("error occured: %v", err)
+			return err
 		}
+		fmt.Print(res)
+	}
 
-		// Display results
-		code := ""
-		fmt.Println("\nThinking...")
-		for _, result := range results {
-			// fmt.Printf("- %s: %s\n", result.ID, result.Content)
-			code = code + result.Content
-		}
-		// Prepare the prompt
+	return nil
+}
 
-		prompt := fmt.Sprintf(`
+func (ca *CodeAssistant) searchCodebase(projectName string, query string) (string, error) {
+	// Initialize the Ollama client
+	client, err := api.ClientFromEnvironment()
+	if err != nil {
+		return "", fmt.Errorf("failed to create Ollama client: %v", err)
+	}
+
+	// Retrieve relevant documents from the vector DB
+	collec := ca.vectorDB.GetCollection(projectName, chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
+	results, err := collec.Query(context.Background(), query, 1, nil, nil) // Search for top 5 results
+	if err != nil {
+		return "", fmt.Errorf("failed to search vector DB: %v", err)
+	}
+
+	// Display results
+	code := ""
+	fmt.Println("\nThinking...")
+	for _, result := range results {
+		// fmt.Printf("- %s: %s\n", result.ID, result.Content)
+		code = code + result.Content
+	}
+	// Prepare the prompt
+
+	prompt := fmt.Sprintf(`
 		Context: %s
 		Question: %s
 		Answer query clearly and concisely, include relevant file paths when applicable. Your answer should be related to this codebase only`, code, query)
 
-		// Create the chat request
-		req := &api.ChatRequest{
-			Model: ca.config.CodeChatModel,
-			Messages: []api.Message{
-				{
-					Role:    "user",
-					Content: prompt,
-				},
+	// fmt.Sprintf("%b", api)
+
+	// Create the chat request
+	req := &api.ChatRequest{
+		Model: ca.config.CodeChatModel,
+		Messages: []api.Message{
+			{
+				Role:    "user",
+				Content: prompt,
 			},
-		}
-
-		var responseContent strings.Builder
-		respFunc := func(resp api.ChatResponse) error {
-			responseContent.WriteString(resp.Message.Content)
-			return nil
-		}
-		// Send the request to Ollama
-		err = client.Chat(context.Background(), req, respFunc)
-		if err != nil {
-			return fmt.Errorf("failed to generate comments: %v", err)
-		}
-
-		// Return the generated comments
-		fmt.Printf(responseContent.String())
-		// print(responseContent.String())
-		// comments, err := ca.generateComments(string(code))
-		// if err != nil {
-		// 	return err
-		// }
+		},
 	}
-	return nil
+
+	var responseContent strings.Builder
+	respFunc := func(resp api.ChatResponse) error {
+		responseContent.WriteString(resp.Message.Content)
+		return nil
+	}
+	// Send the request to Ollama
+	err = client.Chat(context.Background(), req, respFunc)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate comments: %v", err)
+	}
+
+	// Return the generated comments
+	return responseContent.String(), nil
 }
 
 func (ca *CodeAssistant) listProjects(dir string) ([]string, error) {
@@ -692,7 +731,7 @@ func (ca *CodeAssistant) listProjects(dir string) ([]string, error) {
 	return projects, nil
 }
 
-func (ca *CodeAssistant) run() {
+func (ca *CodeAssistant) runCLI() {
 	for {
 		fmt.Println("\nCode Assistant Console")
 		fmt.Println("1. Index Codebase")
@@ -711,7 +750,7 @@ func (ca *CodeAssistant) run() {
 				fmt.Printf("Error: %v\n", err)
 			}
 		case "2":
-			if err := ca.searchCodebase(); err != nil {
+			if err := ca.searchCodebaseCli(); err != nil {
 				fmt.Printf("Error: %v\n", err)
 			}
 		case "3":
@@ -725,6 +764,152 @@ func (ca *CodeAssistant) run() {
 			fmt.Println("Invalid choice")
 		}
 	}
+}
+
+// Web UI Handlers
+func (ca *CodeAssistant) homeHandler(w http.ResponseWriter, r *http.Request) {
+	projects, err := ca.listProjects(ca.config.DocsDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error listing projects: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse the template
+	tmpl, err := template.ParseFiles("templates/index.html")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error parsing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	data := map[string][]string{
+		"Projects": projects,
+	}
+
+	// Execute the template
+	err = tmpl.Execute(w, data)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error executing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (ca *CodeAssistant) projectHandler(w http.ResponseWriter, r *http.Request) {
+	projectName := r.URL.Path[len("/project/"):] // Extract project name from URL
+	projectConfig, err := ca.loadProjectConfig(projectName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error loading project config: %v", err), http.StatusInternalServerError)
+		return
+	}
+	// Parse the template
+	tmpl, err := template.ParseFiles("templates/project.html")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error parsing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	err = tmpl.Execute(w, projectConfig)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error executing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (ca *CodeAssistant) indexHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("calling index code base")
+	err := ca.indexCodebase("") // force to ask code details
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error Indexing: %v", err), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (ca *CodeAssistant) chatHandler(w http.ResponseWriter, r *http.Request) {
+	projectName := r.URL.Path[len("/chat/"):]
+	// Parse the template
+	tmpl, err := template.ParseFiles("templates/chat.html")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error parsing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+	data := map[string]string{
+		"ProjectName": projectName,
+	}
+	err = tmpl.Execute(w, data)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error executing template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (ca *CodeAssistant) queryHandler(w http.ResponseWriter, r *http.Request) {
+	projectName := r.FormValue("project_name")
+	query := r.FormValue("query")
+
+	if projectName == "" || query == "" {
+		http.Error(w, "Project name and query are required", http.StatusBadRequest)
+		return
+	}
+
+	response, err := ca.searchCodebase(projectName, query)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error searching codebase: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Escape the response for HTML to prevent XSS
+	escapedResponse := template.HTMLEscapeString(response)
+
+	// Create the HTML response
+	htmlResponse := fmt.Sprintf("<p><strong>Query:</strong> %s</p><p><strong>Response:</strong> %s</p>", template.HTMLEscapeString(query), escapedResponse)
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(htmlResponse))
+}
+
+func (ca *CodeAssistant) reindexHandler(w http.ResponseWriter, r *http.Request) {
+	err := ca.reindexCodebase() // force to ask code details
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error Reindexing: %v", err), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// StartWebServer starts the web server
+func (ca *CodeAssistant) StartWebServer() {
+	http.HandleFunc("/", ca.homeHandler)
+	http.HandleFunc("/project/", ca.projectHandler)
+	http.HandleFunc("/index", ca.indexHandler)
+	http.HandleFunc("/chat/", ca.chatHandler)
+	http.HandleFunc("/query", ca.queryHandler)
+	http.HandleFunc("/reindex", ca.reindexHandler)
+
+	// Serve static files (CSS, JS, etc.)
+	fs := http.FileServer(http.Dir("static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	fmt.Printf("Starting web server on :%s\n", ca.config.WebPort)
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+ca.config.WebPort, nil))
+}
+
+func (ca *CodeAssistant) loadProjects() error {
+	projects, err := ca.listProjects(ca.config.DocsDir)
+	if err != nil {
+		return err
+	}
+	ca.projects = projects
+	return nil
+}
+
+func (ca *CodeAssistant) run() {
+	// Load projects at startup
+	if err := ca.loadProjects(); err != nil {
+		fmt.Printf("Error loading projects: %v\n", err)
+	}
+	go ca.StartWebServer()
+	ca.runCLI()
 }
 
 func main() {

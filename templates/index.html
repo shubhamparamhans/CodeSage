@@ -1,0 +1,33 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>Code Assistant</title>
+	<link rel="stylesheet" type="text/css" href="/static/style.css">
+</head>
+
+<body>
+	<h1>Code Assistant Projects</h1>
+
+	<div class="container">
+		<div class="sidebar">
+			<h2>Actions</h2>
+			<ul>
+				<li><a href="/index">Index Codebase</a></li>
+				<li><a href="/reindex">Reindex Codebase</a></li>
+			</ul>
+		</div>
+
+		<div class="main-content">
+			<h2>Projects</h2>
+			<ul>
+				{{range .Projects}}
+				<li><a href="/project/{{.}}">{{.}}</a> <a href="/chat/{{.}}">Chat</a></li>
+				{{end}}
+			</ul>
+		</div>
+	</div>
+</body>
+
+</html>

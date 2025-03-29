@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat with Codebase</title>
+    <link rel="stylesheet" type="text/css" href="/static/style.css">
+</head>
+<body>
+    <h1>Chat with Project: {{.ProjectName}}</h1>
+
+    <div class="container">
+        <div class="sidebar">
+            <h2>Actions</h2>
+            <ul>
+                <li><a href="/">Back to Projects</a></li>
+                <li><a href="/index">Index Codebase</a></li>
+                <li><a href="/reindex">Reindex Codebase</a></li>
+            </ul>
+        </div>
+
+        <div class="main-content">
+            <div id="chat-container">
+                <div id="chat-log">
+                    <!-- Chat messages will be displayed here -->
+                </div>
+
+                <form id="chat-form" action="/query" method="POST">
+                    <input type="hidden" name="project_name" value="{{.ProjectName}}">
+                    <input type="text" id="query-input" name="query" placeholder="Enter your query...">
+                    <button type="submit">Send</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatForm = document.getElementById('chat-form');
+        const chatLog = document.getElementById('chat-log');
+        const queryInput = document.getElementById('query-input');
+
+        chatForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            const projectName = chatForm.elements['project_name'].value;
+            const query = queryInput.value;
+
+            // Display the user's query in the chat log
+            const userMessage = document.createElement('div');
+            userMessage.classList.add('chat-message', 'user-message');
+            userMessage.innerHTML = `<p><strong>You:</strong> ${query}</p>`;
+            chatLog.appendChild(userMessage);
+
+            
+
+            try {
+                const formData = new FormData(chatForm);
+                const response = await fetch('/query', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                // Clear the input field
+                queryInput.value = '';
+
+                const htmlResponse = await response.text();
+
+                // Display the bot's response in the chat log
+                const botMessage = document.createElement('div');
+                botMessage.classList.add('chat-message', 'bot-message');
+                botMessage.innerHTML = htmlResponse;
+                chatLog.appendChild(botMessage);
+
+                // Scroll to the bottom of the chat log
+                chatLog.scrollTop = chatLog.scrollHeight;
+
+            } catch (error) {
+                console.error('Error:', error);
+                const errorMessage = document.createElement('div');
+                errorMessage.classList.add('chat-message', 'error-message');
+                errorMessage.textContent = `Error: ${error.message}`;
+                chatLog.appendChild(errorMessage);
+            }
+        });
+    </script>
+</body>
+</html>
