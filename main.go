@@ -34,6 +34,7 @@ type Config struct {
 	HashDBPath         string `json:"hash_db_path"`   // Path to chromem DB directory
 	SQLiteDBPath       string `json:"sqlite_db_path"` // Path to the SQLite database
 	WebPort            string `json:"web_port"`       // Port for the web UI
+	GitBinPath         string `json:"git_bin_path"`   // Path to git binary
 }
 
 // DefaultConfig returns the default global configuration
@@ -737,7 +738,8 @@ func (ca *CodeAssistant) runCLI() {
 		fmt.Println("1. Index Codebase")
 		fmt.Println("2. Search Codebase")
 		fmt.Println("3. Reindex Codebase")
-		fmt.Println("4. Exit")
+		fmt.Println("4. Review Commit")
+		fmt.Println("5. Exit")
 		fmt.Print("Select option: ")
 
 		scanner := bufio.NewScanner(os.Stdin)
@@ -758,6 +760,41 @@ func (ca *CodeAssistant) runCLI() {
 				fmt.Printf("Error: %v\n", err)
 			}
 		case "4":
+			// fmt.Print("Enter repository path: ")
+			// scanner.Scan()
+			// repoPath := scanner.Text()
+			projects, err := ca.listProjects(ca.config.DocsDir)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			}
+
+			if len(projects) == 0 {
+				fmt.Println("No indexed projects found")
+				fmt.Printf("Error: %v\n", err)
+			}
+
+			fmt.Println("Available projects:")
+			for i, p := range projects {
+				fmt.Printf("%d. %s\n", i+1, p)
+			}
+
+			fmt.Print("Select project: ")
+			scanner := bufio.NewScanner(os.Stdin)
+			scanner.Scan()
+			choice := scanner.Text()
+			selectedIndex := 0
+			fmt.Sscanf(choice, "%d", &selectedIndex)
+			selectedProject := projects[selectedIndex-1]
+			ca.projectConfig, err = ca.loadProjectConfig(selectedProject)
+
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			}
+			repoPath := ca.projectConfig.ProjectPath
+			if err := ca.reviewCommit(repoPath); err != nil {
+				fmt.Printf("Error: %v\n", err)
+			}
+		case "5":
 			fmt.Println("Exiting...")
 			return
 		default:
