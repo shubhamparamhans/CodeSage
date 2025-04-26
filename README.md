@@ -1,9 +1,9 @@
-# CodeSage: AI-Powered Code  Assistant Engineering Manger
+# CodeSage: AI-Powered Code  Assistant Engineering Manager
 **The Sage Knows Your Code**
 
 ![Associate AI EM Logo](https://s3.ca-central-1.amazonaws.com/logojoy/logos/215622747/no_padding.png?8606.300000011921) <!-- Add a logo if you have one -->
 
-CodeSage (previously Associate AI EM) is a powerful tool that automates code documentation and indexing. 
+CodeSage (previously Associate AI EM) is a powerful tool that automates code documentation and code review. 
 It uses AI to generate detailed comments and documentation for your codebase, making it easier to understand and maintain. 
 With support for multiple programming languages and an in-memory vector database, Associate AI EM ensures fast and efficient codebase indexing and search functionality.
 
@@ -17,6 +17,7 @@ With support for multiple programming languages and an in-memory vector database
 - **Exclusion Filters**: Exclude specific directories and file extensions (e.g., `.log`, `.tmp`) from indexing.
 - **Interactive CLI**: Easy-to-use command-line interface for indexing, searching, and reindexing codebases.
 - **Persistent Storage**: Save and load indexed data for future use.
+- **Code Review**: Now reveiw your last commits for potential bugs, code style improvement, security concerns, performance optimisations
 
 ---
 
