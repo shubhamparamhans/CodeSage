@@ -70,8 +70,9 @@ func LoadConfig(filename string) (Config, error) {
 			return config, fmt.Errorf("failed to write config file: %v", err)
 		}
 
-		fmt.Printf("Config file created: %s\nPlease update the variables and rerun the program.\n", filename)
-		os.Exit(0)
+		fmt.Printf("Default config created at %s — continuing with defaults", filename)
+		// carry on with the default config
+		return config, nil
 	}
 
 	// Load the config file
@@ -105,6 +106,27 @@ type CodeAssistant struct {
 	db            *sql.DB       // SQLite database connection
 	projectConfig ProjectConfig // Project-specific config
 	projects      []string      // List of indexed projects
+}
+
+func MakeModelsAvailable(config Config) error {
+	models := []string{
+		config.EmbeddingModel,
+		config.CodeChatModel,
+		config.DocumentationModel,
+	}
+
+	for _, model := range models {
+		// Use Ollama CLI or API to download the model if missing
+		cmd := exec.Command("ollama", "pull", model)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		fmt.Printf("Ensuring model is available: %s\n", model)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to pull model %s: %v", model, err)
+		}
+	}
+
+	return nil
 }
 
 func NewCodeAssistant(config Config) *CodeAssistant {
@@ -1046,6 +1068,10 @@ func main() {
 
 	// Set OLLAMA_HOST environment variable
 	os.Setenv("OLLAMA_HOST", config.OllamaHost)
+
+	if err := MakeModelsAvailable(config); err != nil {
+		log.Fatalf("Error getting models: %v", err)
+	}
 
 	// Initialize and run the code assistant
 	assistant := NewCodeAssistant(config)
