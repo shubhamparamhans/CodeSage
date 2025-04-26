@@ -1,9 +1,10 @@
 {
   "docs_dir": "./docs",
   "embedding_model": "nomic-embed-text",
-  "code_chat_model": "qwen2.5-coder:1.5b",
-  "documentation_model": "llama3.2:1b",
-  "ollama_host": "https://allm.habitnetwork.xyz",
+  "code_chat_model": "gemma3:1b",
+  "documentation_model": "gemma3:1b",
+  "ollama_host": "http://localhost:11434",
   "hash_db_path": "./db",
-  "sqlite_db_path": "file_hashes.db"
+  "sqlite_db_path": "file_hashes.db",
+  "web_port":"3030"
 }

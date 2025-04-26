@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	_ "github.com/mattn/go-sqlite3" // Import SQLite driver
 	"github.com/ollama/ollama/api"
 	"github.com/philippgille/chromem-go" // Chromem in-memory vector DB
@@ -396,8 +397,60 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 		}
 	}
 
+	// Cool down configuration
+	const (
+		maxFileProcessTime  = 30 * time.Second // N seconds per file threshold
+		maxTotalProcessTime = 5 * time.Minute  // Y minutes total threshold
+		coolDownPeriod      = 60 * time.Second // X seconds to wait
+	)
+
+	var (
+		startTotalTime = time.Now()
+		lastCoolDown   time.Time
+	)
+
+	// Create a ticker for periodic saves
+	saveTicker := time.NewTicker(30 * time.Second)
+	defer saveTicker.Stop()
+
+	go func() {
+		for range saveTicker.C {
+			ca.projectConfig.LastUpdated = time.Now()
+			ca.projectConfig.TotalIndexedFiles = processedFiles
+			ca.projectConfig.TotalFailedFiles = failedFiles
+
+			if err := ca.saveProjectConfig(ca.projectConfig); err != nil {
+				fmt.Printf("Auto-save error: %v\n", err)
+			}
+		}
+	}()
+	isLocalHost := strings.Contains(ca.config.OllamaHost, "localhost") //true
+	// Initialize with safe defaults (85°C critical, 65°C safe)
+	tempMonitor := NewTemperatureMonitor(80, 65, !isLocalHost)
+
 	bar := progressbar.Default(int64(len(files)))
 	for _, file := range files {
+
+		fileStartTime := time.Now()
+		// Check if we need cooldown
+		if time.Since(lastCoolDown) < coolDownPeriod {
+			if tempMonitor.useFallback {
+				remaining := coolDownPeriod - time.Since(lastCoolDown)
+				fmt.Printf("\nCooling down for %.0f more seconds...\n", remaining.Seconds())
+				time.Sleep(remaining)
+			} else {
+				temp, source, _ := tempMonitor.getTemperature()
+				if temp >= tempMonitor.criticalTemp {
+					color.Yellow("\n🚨 %s temperature critical (%.1f°C)",
+						strings.ToUpper(source), temp)
+					if err := tempMonitor.CoolDown(); err != nil {
+						color.Red("❌ Cooling failed: %v", err)
+					}
+				}
+			}
+
+		}
+
 		relPath, err := filepath.Rel(path, file)
 		if err != nil {
 			fmt.Printf("Error getting relative path for %s: %v\n", file, err)
@@ -463,6 +516,10 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 
 		processedFiles++
 		bar.Add(1)
+		if processedFiles%10 == 0 {
+			fmt.Println("Cooling down for 5 seconds")
+			time.Sleep(10 * time.Second)
+		}
 
 		// Update the file hash in the database
 		err = ca.setFileHash(file, currentHash)
@@ -470,6 +527,31 @@ func (ca *CodeAssistant) indexCodebase(reindexProject string) error {
 			fmt.Printf("Error setting hash for %s in DB: %v\n", file, err)
 			failedFiles++
 		}
+
+		// Check for cooldown triggers after processing each file
+		fileProcessTime := time.Since(fileStartTime)
+		totalProcessTime := time.Since(startTotalTime)
+
+		if tempMonitor.useFallback && fileProcessTime > maxFileProcessTime || totalProcessTime > maxTotalProcessTime {
+			fmt.Printf("\nTriggering cooldown period (file: %.1fs, total: %.1fm)...\n",
+				fileProcessTime.Seconds(), totalProcessTime.Minutes())
+
+			lastCoolDown = time.Now()
+			time.Sleep(coolDownPeriod)
+
+			// Reset timers after cooldown
+			startTotalTime = time.Now()
+		} else {
+			temp, source, _ := tempMonitor.getTemperature()
+			if temp >= tempMonitor.criticalTemp {
+				color.Yellow("\n🚨 %s temperature critical (%.1f°C)",
+					strings.ToUpper(source), temp)
+				if err := tempMonitor.CoolDown(); err != nil {
+					color.Red("❌ Cooling failed: %v", err)
+				}
+			}
+		}
+
 	}
 	// Save the project config
 	ca.projectConfig = ProjectConfig{
@@ -648,8 +730,8 @@ func (ca *CodeAssistant) searchCodebaseCli() error {
 			break
 		}
 
-		fmt.Print("project name is ", selectedProject)
-		fmt.Print("queyr is", query)
+		fmt.Println("project name is ", selectedProject)
+		fmt.Println("query is", query)
 
 		res, err := ca.searchCodebase(selectedProject, query)
 		if err != nil {
@@ -668,14 +750,12 @@ func (ca *CodeAssistant) searchCodebase(projectName string, query string) (strin
 	if err != nil {
 		return "", fmt.Errorf("failed to create Ollama client: %v", err)
 	}
-
 	// Retrieve relevant documents from the vector DB
 	collec := ca.vectorDB.GetCollection(projectName, chromem.NewEmbeddingFuncOllama(ca.config.EmbeddingModel, ""))
 	results, err := collec.Query(context.Background(), query, 1, nil, nil) // Search for top 5 results
 	if err != nil {
 		return "", fmt.Errorf("failed to search vector DB: %v", err)
 	}
-
 	// Display results
 	code := ""
 	fmt.Println("\nThinking...")
@@ -691,6 +771,7 @@ func (ca *CodeAssistant) searchCodebase(projectName string, query string) (strin
 		Answer query clearly and concisely, include relevant file paths when applicable. Your answer should be related to this codebase only`, code, query)
 
 	// fmt.Sprintf("%b", api)
+	// fmt.Println("prompt is ", prompt)
 
 	// Create the chat request
 	req := &api.ChatRequest{
@@ -945,6 +1026,12 @@ func (ca *CodeAssistant) run() {
 	if err := ca.loadProjects(); err != nil {
 		fmt.Printf("Error loading projects: %v\n", err)
 	}
+	fmt.Println(`
+	┌────────────────────────────────────────────┐
+	│   CodeSage - The Sage Knows Your Code      │
+	│   AI-Powered Code Documentation & Review   │
+	└────────────────────────────────────────────┘
+	`)
 	go ca.StartWebServer()
 	ca.runCLI()
 }
