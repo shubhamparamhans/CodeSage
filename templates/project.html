@@ -1,0 +1,36 @@
+<!-- templates/project.html -->
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>Project Details</title>
+	<link rel="stylesheet" type="text/css" href="/static/style.css">
+</head>
+
+<body>
+	<h1>Project Details: {{.ProjectName}}</h1>
+
+	<div class="container">
+		<div class="sidebar">
+			<h2>Actions</h2>
+			<ul>
+				<li><a href="/index">Index Codebase</a></li>
+				<li><a href="/reindex">Reindex Codebase</a></li>
+				<li><a href="/chat/{{.ProjectName}}">Chat</a></li>
+			</ul>
+		</div>
+
+		<div class="main-content">
+			<h2>Project Configuration</h2>
+			<p><strong>Project Name:</strong> {{.ProjectName}}</p>
+			<p><strong>Project Path:</strong> {{.ProjectPath}}</p>
+			<p><strong>Exclude Folders:</strong> {{.ExcludeFolders}}</p>
+			<p><strong>Exclude Files:</strong> {{.ExcludeFiles}}</p>
+			<p><strong>Last Updated:</strong> {{.LastUpdated}}</p>
+			<p><strong>Total Indexed Files:</strong> {{.TotalIndexedFiles}}</p>
+			<p><strong>Total Failed Files:</strong> {{.TotalFailedFiles}}</p>
+		</div>
+	</div>
+</body>
+
+</html>
