@@ -1,8 +1,9 @@
-# Associate AI EM: AI-Powered Code  Assistant Engineering Manger
+# CodeSage: AI-Powered Code  Assistant Engineering Manger
+**The Sage Knows Your Code**
 
 ![Associate AI EM Logo](https://s3.ca-central-1.amazonaws.com/logojoy/logos/215622747/no_padding.png?8606.300000011921) <!-- Add a logo if you have one -->
 
-Associate AI EM is a powerful tool that automates code documentation and indexing. 
+CodeSage (previously Associate AI EM) is a powerful tool that automates code documentation and indexing. 
 It uses AI to generate detailed comments and documentation for your codebase, making it easier to understand and maintain. 
 With support for multiple programming languages and an in-memory vector database, Associate AI EM ensures fast and efficient codebase indexing and search functionality.
 
@@ -23,7 +24,7 @@ With support for multiple programming languages and an in-memory vector database
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/shubhamparamhans/Associate-AI-EM.git
+   git clone https://github.com/shubhamparamhans/CodeSage.git
    cd Associate-AI-EM
 ---
 **Screenshots**
